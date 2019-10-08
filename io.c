@@ -1501,7 +1501,7 @@ do_writeconv(VALUE str, rb_io_t *fptr, int *converted)
 }
 
 static long
-io_fwrite(VALUE str, rb_io_t *fptr, int nosync)
+io_fwrite(VALUE str, rb_io_t *fptr, int nosync, size_t off)
 {
     int converted = 0;
     VALUE tmp;
@@ -1519,7 +1519,7 @@ io_fwrite(VALUE str, rb_io_t *fptr, int nosync)
 
     tmp = rb_str_tmp_frozen_acquire(str);
     RSTRING_GETMEM(tmp, ptr, len);
-    n = io_binwrite(tmp, ptr, len, fptr, nosync);
+    n = io_binwrite(tmp, ptr + off, len - off, fptr, nosync);
     rb_str_tmp_frozen_release(str, tmp);
 
     return n;
@@ -1536,7 +1536,7 @@ rb_io_bufwrite(VALUE io, const void *buf, size_t size)
 }
 
 static VALUE
-io_write(VALUE io, VALUE str, int nosync)
+io_write(VALUE io, VALUE str, int nosync, size_t off)
 {
     rb_io_t *fptr;
     long n;
@@ -1555,7 +1555,7 @@ io_write(VALUE io, VALUE str, int nosync)
     GetOpenFile(io, fptr);
     rb_io_check_writable(fptr);
 
-    n = io_fwrite(str, fptr, nosync);
+    n = io_fwrite(str, fptr, nosync, off);
     if (n < 0L) rb_sys_fail_path(fptr->pathv);
 
     return LONG2FIX(n);
@@ -1771,6 +1771,8 @@ io_writev(int argc, VALUE *argv, VALUE io)
 static VALUE
 io_write_m(int argc, VALUE *argv, VALUE io)
 {
+  /* rb_scan_args_kw */
+  /* offset:, length: */
     if (argc != 1) {
 	return io_writev(argc, argv, io);
     }
@@ -3100,14 +3102,14 @@ static VALUE
 io_read(int argc, VALUE *argv, VALUE io)
 {
     rb_io_t *fptr;
-    long n, len;
-    VALUE length, str;
+    long n, len, off;
+    VALUE length, str, offset;
     int shrinkable;
 #if defined(RUBY_TEST_CRLF_ENVIRONMENT) || defined(_WIN32)
     int previous_mode;
 #endif
 
-    rb_scan_args(argc, argv, "02", &length, &str);
+    rb_scan_args(argc, argv, "03", &length, &str, &offset);
 
     if (NIL_P(length)) {
 	GetOpenFile(io, fptr);
@@ -3119,7 +3121,17 @@ io_read(int argc, VALUE *argv, VALUE io)
 	rb_raise(rb_eArgError, "negative length %ld given", len);
     }
 
-    shrinkable = io_setstrbuf(&str,len);
+    if(NIL_P(offset)) {
+      off = 0;
+    } 
+    else {
+      off = NUM2LONG(offset);
+      if(off < 0) {
+          rb_raise(rb_eArgError, "negative length %ld given", off);
+      }
+    }
+
+    shrinkable = io_setstrbuf(&str,off + len);
 
     GetOpenFile(io, fptr);
     rb_io_check_byte_readable(fptr);
@@ -3132,8 +3144,8 @@ io_read(int argc, VALUE *argv, VALUE io)
 #if defined(RUBY_TEST_CRLF_ENVIRONMENT) || defined(_WIN32)
     previous_mode = set_binary_mode_with_seek_cur(fptr);
 #endif
-    n = io_fread(str, 0, len, fptr);
-    io_set_read_length(str, n, shrinkable);
+    n = io_fread(str, off, len, fptr);
+    io_set_read_length(str, off + n, shrinkable);
 #if defined(RUBY_TEST_CRLF_ENVIRONMENT) || defined(_WIN32)
     if (previous_mode == O_TEXT) {
 	setmode(fptr->fd, O_TEXT);
